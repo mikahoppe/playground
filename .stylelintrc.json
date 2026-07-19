@@ -1,0 +1,31 @@
+{
+  "extends": ["stylelint-config-standard"],
+  "rules": {
+    "at-rule-no-unknown": [
+      true,
+      {
+        "ignoreAtRules": [
+          "theme",
+          "source",
+          "utility",
+          "variant",
+          "custom-variant",
+          "apply",
+          "tailwind",
+          "config",
+          "plugin",
+          "reference"
+        ]
+      }
+    ],
+    "declaration-property-value-disallowed-list": {
+      "/^(color|fill|stroke|background|background-color|border|border-color|outline|outline-color|box-shadow)$/": [
+        "/#[0-9a-fA-F]{3,8}\\b/",
+        "/\\b(rgba?|hsla?)\\(/"
+      ]
+    },
+    "import-notation": "string",
+    "custom-property-empty-line-before": null,
+    "comment-empty-line-before": null
+  }
+}
