@@ -1,54 +1,74 @@
-/** Demo project data backing the proof-of-concept project pages. */
+/**
+ * Project entities backing the `/projects` route.
+ *
+ * A project carries only a display `name` plus lifecycle audit fields. All
+ * three lifecycle events are recorded as an "at" timestamp and a "by" user id;
+ * archiving and deleting are soft (the row stays, the columns are set).
+ *
+ * The table shape lives in `supabase/migrations`; this module holds the
+ * TypeScript view of it and the row → domain mapping used by the page and
+ * server actions.
+ */
 
-/** A single demo project. */
-export type Project = {
-  /** URL slug used as the dynamic route segment. */
-  slug: string;
-  /** Display name. */
+/** A project row exactly as stored in Supabase (snake_case columns). */
+export type ProjectRow = {
+  id: string;
   name: string;
-  /** Short one-line summary. */
-  summary: string;
-  /** Current lifecycle status. */
-  status: "Active" | "Planning" | "On hold";
-  /** Completion percentage, 0-100. */
-  progress: number;
-  /** Owning team or person. */
-  owner: string;
+  created_at: string;
+  created_by: string;
+  archived_at: string | null;
+  archived_by: string | null;
+  deleted_at: string | null;
+  deleted_by: string | null;
 };
 
-/** The seed set of demo projects. */
-export const PROJECTS: readonly Project[] = [
-  {
-    slug: "website-redesign",
-    name: "Website Redesign",
-    summary: "Refresh the marketing site with the new brand system.",
-    status: "Active",
-    progress: 62,
-    owner: "Growth",
-  },
-  {
-    slug: "mobile-app",
-    name: "Mobile App",
-    summary: "Ship the first native companion app for iOS and Android.",
-    status: "Planning",
-    progress: 18,
-    owner: "Product",
-  },
-  {
-    slug: "billing-migration",
-    name: "Billing Migration",
-    summary: "Move invoicing onto the new subscription platform.",
-    status: "On hold",
-    progress: 40,
-    owner: "Platform",
-  },
-];
+/** A project in the shape the app works with (camelCase). */
+export type Project = {
+  /** Primary key. */
+  id: string;
+  /** Display name. */
+  name: string;
+  /** ISO timestamp the project was created. */
+  createdAt: string;
+  /** User id that created the project. */
+  createdBy: string;
+  /** ISO timestamp the project was archived, or `null` if not archived. */
+  archivedAt: string | null;
+  /** User id that archived the project, or `null`. */
+  archivedBy: string | null;
+  /** ISO timestamp the project was (soft) deleted, or `null`. */
+  deletedAt: string | null;
+  /** User id that deleted the project, or `null`. */
+  deletedBy: string | null;
+};
+
+/** Columns selected for every project read, kept in sync with {@link ProjectRow}. */
+export const PROJECT_COLUMNS =
+  "id, name, created_at, created_by, archived_at, archived_by, deleted_at, deleted_by";
 
 /**
- * Look up a demo project by its slug.
- * @param slug - The project slug from the URL.
- * @returns The matching project, or `undefined` if none matches.
+ * Map a raw Supabase row to the app's {@link Project} shape.
+ * @param row - The row as returned by Supabase.
+ * @returns The project in camelCase form.
  */
-export function getProjectBySlug(slug: string): Project | undefined {
-  return PROJECTS.find((project) => project.slug === slug);
+export function mapProjectRow(row: ProjectRow): Project {
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    createdBy: row.created_by,
+    archivedAt: row.archived_at,
+    archivedBy: row.archived_by,
+    deletedAt: row.deleted_at,
+    deletedBy: row.deleted_by,
+  };
+}
+
+/**
+ * Whether a project is archived (and not deleted).
+ * @param project - The project to test.
+ * @returns `true` when the project has been archived but not deleted.
+ */
+export function isArchived(project: Project): boolean {
+  return project.archivedAt !== null && project.deletedAt === null;
 }
