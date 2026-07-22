@@ -1,6 +1,14 @@
 "use client";
 
-import { useActionState, useRef, useTransition } from "react";
+import {
+  useActionState,
+  useCallback,
+  useEffect,
+  useOptimistic,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import {
   type ActionResult,
   archiveProject,
@@ -9,18 +17,33 @@ import {
 } from "@/app/(app)/projects/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { Project } from "@/lib/projects";
+import { applyOptimistic, type Project } from "@/lib/projects";
+import { getCachedProjects, saveCachedProjects } from "@/lib/projects-db";
 
 const NO_ERROR: ActionResult = { error: null };
 
 /**
- * A single project row with archive and delete controls.
+ * A single project row with archive and delete controls. The controls call the
+ * handlers passed down, which apply the optimistic change and run the server
+ * action; `isPending` disables them while any mutation is in flight.
  * @param {object} props - Component props.
  * @param {Project} props.project - The project to render.
+ * @param {boolean} props.isPending - Whether a mutation is in flight.
+ * @param {(id: string) => void} props.onArchive - Archive handler.
+ * @param {(id: string) => void} props.onDelete - Delete handler.
  * @returns {ReactElement} The list item.
  */
-function ProjectItem({ project }: { project: Project }): React.ReactElement {
-  const [isPending, startTransition] = useTransition();
+function ProjectItem({
+  project,
+  isPending,
+  onArchive,
+  onDelete,
+}: {
+  project: Project;
+  isPending: boolean;
+  onArchive: (id: string) => void;
+  onDelete: (id: string) => void;
+}): React.ReactElement {
   const isArchived = project.archivedAt !== null;
 
   return (
@@ -40,11 +63,7 @@ function ProjectItem({ project }: { project: Project }): React.ReactElement {
             variant="outline"
             size="sm"
             disabled={isPending}
-            onClick={() => {
-              startTransition(async () => {
-                await archiveProject(project.id);
-              });
-            }}
+            onClick={() => onArchive(project.id)}
           >
             Archive
           </Button>
@@ -54,11 +73,7 @@ function ProjectItem({ project }: { project: Project }): React.ReactElement {
           variant="destructive"
           size="sm"
           disabled={isPending}
-          onClick={() => {
-            startTransition(async () => {
-              await deleteProject(project.id);
-            });
-          }}
+          onClick={() => onDelete(project.id)}
         >
           Delete
         </Button>
@@ -68,10 +83,35 @@ function ProjectItem({ project }: { project: Project }): React.ReactElement {
 }
 
 /**
+ * Track whether the browser is currently offline, updating on connectivity
+ * changes.
+ * @returns {boolean} `true` when `navigator.onLine` is false.
+ */
+function useIsOffline(): boolean {
+  const [isOffline, setIsOffline] = useState(false);
+  const subscribe = useCallback((): (() => void) => {
+    const sync = (): void => setIsOffline(!navigator.onLine);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return (): void => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
+  useEffect(() => subscribe(), [subscribe]);
+  return isOffline;
+}
+
+/**
  * The `/projects` view: a form to add a project and a list of the signed-in
- * user's projects with archive and delete controls. Data is fetched by the
- * server component and passed in; mutations run through server actions that
- * revalidate the route.
+ * user's projects with archive and delete controls.
+ *
+ * The server component supplies the authoritative `projects`; that list is
+ * mirrored into IndexedDB on every change and read back as the render source
+ * only while offline. Mutations apply an optimistic change immediately, then
+ * run the server action; `revalidatePath` feeds fresh props back in, which
+ * resets the optimistic overlay (and rolls it back if the action failed).
  * @param {object} props - Component props.
  * @param {Project[]} props.projects - Non-deleted projects, newest first.
  * @returns {ReactElement} The projects page body.
@@ -82,8 +122,45 @@ export function ProjectsView({
   projects: Project[];
 }): React.ReactElement {
   const formRef = useRef<HTMLFormElement>(null);
-  const [state, formAction, isPending] = useActionState(
+  const isOffline = useIsOffline();
+  const [cached, setCached] = useState<Project[] | null>(null);
+
+  // Hydrate the offline fallback once; mirror server truth on every change.
+  const hydrateCache = useCallback((): void => {
+    getCachedProjects().then(setCached);
+  }, []);
+  const mirrorCache = useCallback((): void => {
+    void saveCachedProjects(projects);
+  }, [projects]);
+  useEffect(() => hydrateCache(), [hydrateCache]);
+  useEffect(() => mirrorCache(), [mirrorCache]);
+
+  // Trust the server when online; fall back to the cache only when offline.
+  const base = isOffline && cached ? cached : projects;
+  const [optimisticProjects, addOptimistic] = useOptimistic(
+    base,
+    applyOptimistic,
+  );
+
+  const [isMutating, startMutation] = useTransition();
+  const [state, formAction, isCreating] = useActionState(
     async (_prev: ActionResult, formData: FormData) => {
+      const name = String(formData.get("name") ?? "").trim();
+      if (name) {
+        addOptimistic({
+          type: "create",
+          project: {
+            id: `optimistic-${crypto.randomUUID()}`,
+            name,
+            createdAt: new Date().toISOString(),
+            createdBy: "",
+            archivedAt: null,
+            archivedBy: null,
+            deletedAt: null,
+            deletedBy: null,
+          },
+        });
+      }
       const result = await createProject(formData);
       if (result.error === null) {
         formRef.current?.reset();
@@ -92,6 +169,25 @@ export function ProjectsView({
     },
     NO_ERROR,
   );
+
+  const onArchiveProject = (id: string): void => {
+    startMutation(async () => {
+      addOptimistic({
+        type: "archive",
+        id,
+        at: new Date().toISOString(),
+        by: "",
+      });
+      await archiveProject(id);
+    });
+  };
+
+  const onDeleteProject = (id: string): void => {
+    startMutation(async () => {
+      addOptimistic({ type: "delete", id });
+      await deleteProject(id);
+    });
+  };
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6">
@@ -109,9 +205,9 @@ export function ProjectsView({
           aria-label="New project name"
           autoComplete="off"
           required
-          disabled={isPending}
+          disabled={isCreating}
         />
-        <Button type="submit" disabled={isPending}>
+        <Button type="submit" disabled={isCreating}>
           Add project
         </Button>
       </form>
@@ -121,14 +217,20 @@ export function ProjectsView({
         </p>
       )}
 
-      {projects.length === 0 ? (
+      {optimisticProjects.length === 0 ? (
         <p className="text-muted-foreground text-sm">
           No projects yet. Add your first one above.
         </p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {projects.map((project) => (
-            <ProjectItem key={project.id} project={project} />
+          {optimisticProjects.map((project) => (
+            <ProjectItem
+              key={project.id}
+              project={project}
+              isPending={isMutating}
+              onArchive={onArchiveProject}
+              onDelete={onDeleteProject}
+            />
           ))}
         </ul>
       )}
