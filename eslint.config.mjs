@@ -9,6 +9,23 @@ import { useEffectDelegateOnly } from "./eslint-rules/use-effect-delegate-only.m
 
 export default [
   {
+    // Cap authored source files at 400 lines of code (blank lines and comments
+    // don't count). Generated shadcn UI under src/components/ui is exempt, as
+    // it is for the component rules below.
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/components/ui/**"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    rules: {
+      "max-lines": [
+        "error",
+        { max: 400, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  {
     files: ["src/components/**/*.{ts,tsx}"],
     ignores: [
       "**/*.test.{ts,tsx}",
