@@ -9,18 +9,38 @@ import {
   useState,
   useTransition,
 } from "react";
+import { toast } from "sonner";
 import {
   type ActionResult,
   archiveProject,
   createProject,
   deleteProject,
+  restoreProject,
+  unarchiveProject,
 } from "@/app/(app)/projects/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { applyOptimistic, type Project } from "@/lib/projects";
+import {
+  applyOptimistic,
+  type OptimisticAction,
+  type Project,
+} from "@/lib/projects";
 import { getCachedProjects, saveCachedProjects } from "@/lib/projects-db";
 
 const NO_ERROR: ActionResult = { error: null };
+
+/**
+ * A reversible step: the optimistic transform to show the reversal instantly,
+ * the server action that persists it, and the label announced when undone.
+ */
+type UndoEntry = {
+  /** Optimistic transform that reverses the original action. */
+  optimistic: OptimisticAction;
+  /** Server action that persists the reversal. */
+  run: () => Promise<ActionResult>;
+  /** What the toast says when this entry is undone. */
+  label: string;
+};
 
 /**
  * A single project row with archive and delete controls. The controls call the
@@ -142,9 +162,10 @@ export function ProjectsView({
     applyOptimistic,
   );
 
+  const undoStack = useRef<UndoEntry[]>([]);
   const [isMutating, startMutation] = useTransition();
   const [state, formAction, isCreating] = useActionState(
-    async (_prev: ActionResult, formData: FormData) => {
+    async (_prev: ActionResult, formData: FormData): Promise<ActionResult> => {
       const name = String(formData.get("name") ?? "").trim();
       if (name) {
         addOptimistic({
@@ -162,10 +183,17 @@ export function ProjectsView({
         });
       }
       const result = await createProject(formData);
-      if (result.error === null) {
-        formRef.current?.reset();
+      if (result.error !== null) {
+        return { error: result.error };
       }
-      return result;
+      formRef.current?.reset();
+      const { id } = result;
+      undoStack.current.push({
+        optimistic: { type: "delete", id },
+        run: () => deleteProject(id),
+        label: `Removed "${name}"`,
+      });
+      return NO_ERROR;
     },
     NO_ERROR,
   );
@@ -178,16 +206,69 @@ export function ProjectsView({
         at: new Date().toISOString(),
         by: "",
       });
-      await archiveProject(id);
+      const result = await archiveProject(id);
+      if (result.error === null) {
+        undoStack.current.push({
+          optimistic: { type: "unarchive", id },
+          run: () => unarchiveProject(id),
+          label: "Unarchived project",
+        });
+      }
     });
   };
 
   const onDeleteProject = (id: string): void => {
+    const project = optimisticProjects.find((item) => item.id === id);
     startMutation(async () => {
       addOptimistic({ type: "delete", id });
-      await deleteProject(id);
+      const result = await deleteProject(id);
+      if (result.error === null && project) {
+        undoStack.current.push({
+          optimistic: { type: "create", project },
+          run: () => restoreProject(id),
+          label: `Restored "${project.name}"`,
+        });
+      }
     });
   };
+
+  const undo = useCallback((): void => {
+    const entry = undoStack.current.pop();
+    if (!entry) {
+      return;
+    }
+    startMutation(async () => {
+      addOptimistic(entry.optimistic);
+      await entry.run();
+    });
+    toast(entry.label);
+  }, [addOptimistic]);
+
+  const subscribeUndo = useCallback((): (() => void) => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const isCombo =
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === "z" &&
+        !event.shiftKey;
+      if (!isCombo) {
+        return;
+      }
+      // Leave native undo alone while the user is editing a field.
+      const target = event.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      event.preventDefault();
+      undo();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return (): void => window.removeEventListener("keydown", onKeyDown);
+  }, [undo]);
+  useEffect(() => subscribeUndo(), [subscribeUndo]);
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6">
