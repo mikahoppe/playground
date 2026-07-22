@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import type { ReactElement, ReactNode } from "react";
 import { AnalyticsProvider } from "@/components/analytics-provider/analytics.provider";
+import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import "./globals.css";
 import type { NextFontWithVariable } from "next/dist/compiled/@next/font";
@@ -44,6 +45,7 @@ export default function RootLayout({
           Skip to content
         </a>
         <AnalyticsProvider>{children}</AnalyticsProvider>
+        <Toaster />
       </body>
     </html>
   );
