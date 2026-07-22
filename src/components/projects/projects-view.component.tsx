@@ -33,13 +33,22 @@ const NO_ERROR: ActionResult = { error: null };
  * A reversible step: the optimistic transform to show the reversal instantly,
  * the server action that persists it, and the label announced when undone.
  */
-type UndoEntry = {
-  /** Optimistic transform that reverses the original action. */
+/** One direction (undo or redo) of a reversible action. */
+type Op = {
+  /** Optimistic transform applied instantly. */
   optimistic: OptimisticAction;
-  /** Server action that persists the reversal. */
+  /** Server action that persists it. */
   run: () => Promise<ActionResult>;
-  /** What the toast says when this entry is undone. */
+  /** What the toast announces. */
   label: string;
+};
+
+/** A completed action, holding both directions so it can be undone and redone. */
+type HistoryEntry = {
+  /** Reverses the action. */
+  undo: Op;
+  /** Re-applies the action. */
+  redo: Op;
 };
 
 /**
@@ -162,8 +171,16 @@ export function ProjectsView({
     applyOptimistic,
   );
 
-  const undoStack = useRef<UndoEntry[]>([]);
+  const undoStack = useRef<HistoryEntry[]>([]);
+  const redoStack = useRef<HistoryEntry[]>([]);
   const [isMutating, startMutation] = useTransition();
+
+  // Record a completed action; a fresh action invalidates the redo history.
+  const record = useCallback((entry: HistoryEntry): void => {
+    undoStack.current.push(entry);
+    redoStack.current = [];
+  }, []);
+
   const [state, formAction, isCreating] = useActionState(
     async (_prev: ActionResult, formData: FormData): Promise<ActionResult> => {
       const name = String(formData.get("name") ?? "").trim();
@@ -188,10 +205,28 @@ export function ProjectsView({
       }
       formRef.current?.reset();
       const { id } = result;
-      undoStack.current.push({
-        optimistic: { type: "delete", id },
-        run: () => deleteProject(id),
-        label: `Removed "${name}"`,
+      // Undo soft-deletes the new row; redo restores that same row.
+      const project: Project = {
+        id,
+        name,
+        createdAt: new Date().toISOString(),
+        createdBy: "",
+        archivedAt: null,
+        archivedBy: null,
+        deletedAt: null,
+        deletedBy: null,
+      };
+      record({
+        undo: {
+          optimistic: { type: "delete", id },
+          run: () => deleteProject(id),
+          label: `Removed "${name}"`,
+        },
+        redo: {
+          optimistic: { type: "create", project },
+          run: () => restoreProject(id),
+          label: `Restored "${name}"`,
+        },
       });
       return NO_ERROR;
     },
@@ -200,18 +235,21 @@ export function ProjectsView({
 
   const onArchiveProject = (id: string): void => {
     startMutation(async () => {
-      addOptimistic({
-        type: "archive",
-        id,
-        at: new Date().toISOString(),
-        by: "",
-      });
+      const at = new Date().toISOString();
+      addOptimistic({ type: "archive", id, at, by: "" });
       const result = await archiveProject(id);
       if (result.error === null) {
-        undoStack.current.push({
-          optimistic: { type: "unarchive", id },
-          run: () => unarchiveProject(id),
-          label: "Unarchived project",
+        record({
+          undo: {
+            optimistic: { type: "unarchive", id },
+            run: () => unarchiveProject(id),
+            label: "Unarchived project",
+          },
+          redo: {
+            optimistic: { type: "archive", id, at, by: "" },
+            run: () => archiveProject(id),
+            label: "Archived project",
+          },
         });
       }
     });
@@ -223,37 +261,59 @@ export function ProjectsView({
       addOptimistic({ type: "delete", id });
       const result = await deleteProject(id);
       if (result.error === null && project) {
-        undoStack.current.push({
-          optimistic: { type: "create", project },
-          run: () => restoreProject(id),
-          label: `Restored "${project.name}"`,
+        record({
+          undo: {
+            optimistic: { type: "create", project },
+            run: () => restoreProject(id),
+            label: `Restored "${project.name}"`,
+          },
+          redo: {
+            optimistic: { type: "delete", id },
+            run: () => deleteProject(id),
+            label: `Removed "${project.name}"`,
+          },
         });
       }
     });
   };
+
+  const applyOp = useCallback(
+    (op: Op): void => {
+      startMutation(async () => {
+        addOptimistic(op.optimistic);
+        await op.run();
+      });
+      toast(op.label);
+    },
+    [addOptimistic],
+  );
 
   const undo = useCallback((): void => {
     const entry = undoStack.current.pop();
     if (!entry) {
       return;
     }
-    startMutation(async () => {
-      addOptimistic(entry.optimistic);
-      await entry.run();
-    });
-    toast(entry.label);
-  }, [addOptimistic]);
+    redoStack.current.push(entry);
+    applyOp(entry.undo);
+  }, [applyOp]);
 
-  const subscribeUndo = useCallback((): (() => void) => {
+  const redo = useCallback((): void => {
+    const entry = redoStack.current.pop();
+    if (!entry) {
+      return;
+    }
+    undoStack.current.push(entry);
+    applyOp(entry.redo);
+  }, [applyOp]);
+
+  const subscribeShortcuts = useCallback((): (() => void) => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      const isCombo =
-        (event.metaKey || event.ctrlKey) &&
-        event.key.toLowerCase() === "z" &&
-        !event.shiftKey;
-      if (!isCombo) {
+      const isZ =
+        (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z";
+      if (!isZ) {
         return;
       }
-      // Leave native undo alone while the user is editing a field.
+      // Leave native undo/redo alone while the user is editing a field.
       const target = event.target as HTMLElement | null;
       if (
         target instanceof HTMLInputElement ||
@@ -263,12 +323,16 @@ export function ProjectsView({
         return;
       }
       event.preventDefault();
-      undo();
+      if (event.shiftKey) {
+        redo();
+      } else {
+        undo();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return (): void => window.removeEventListener("keydown", onKeyDown);
-  }, [undo]);
-  useEffect(() => subscribeUndo(), [subscribeUndo]);
+  }, [undo, redo]);
+  useEffect(() => subscribeShortcuts(), [subscribeShortcuts]);
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6">
