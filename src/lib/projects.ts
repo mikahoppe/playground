@@ -81,6 +81,7 @@ export function isArchived(project: Project): boolean {
 export type OptimisticAction =
   | { type: "create"; project: Project }
   | { type: "archive"; id: string; at: string; by: string }
+  | { type: "unarchive"; id: string }
   | { type: "delete"; id: string };
 
 /**
@@ -103,6 +104,12 @@ export function applyOptimistic(
       return list.map((project) =>
         project.id === action.id
           ? { ...project, archivedAt: action.at, archivedBy: action.by }
+          : project,
+      );
+    case "unarchive":
+      return list.map((project) =>
+        project.id === action.id
+          ? { ...project, archivedAt: null, archivedBy: null }
           : project,
       );
     case "delete":

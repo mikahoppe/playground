@@ -104,6 +104,20 @@ describe("applyOptimistic", () => {
     expect(next[1]).toEqual(other);
   });
 
+  it("clears the archive columns for the matching project", () => {
+    const archived = mapProjectRow(
+      rowOf({
+        id: "p1",
+        archived_at: "2026-07-22T00:00:00Z",
+        archived_by: "u2",
+      }),
+    );
+
+    const next = applyOptimistic([archived], { type: "unarchive", id: "p1" });
+
+    expect(next[0]).toMatchObject({ archivedAt: null, archivedBy: null });
+  });
+
   it("removes a deleted project from the list", () => {
     const other = mapProjectRow(rowOf({ id: "p2" }));
 
