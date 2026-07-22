@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isArchived, mapProjectRow, type ProjectRow } from "./projects";
+import {
+  applyOptimistic,
+  isArchived,
+  mapProjectRow,
+  type Project,
+  type ProjectRow,
+} from "./projects";
 
 /**
  * Build a project row with sensible defaults, overridable per test.
@@ -61,5 +67,57 @@ describe("isArchived", () => {
         ),
       ),
     ).toBe(false);
+  });
+});
+
+describe("applyOptimistic", () => {
+  const existing: Project = mapProjectRow(
+    rowOf({ id: "p1", name: "Existing" }),
+  );
+
+  it("prepends a created project (newest first)", () => {
+    const created: Project = mapProjectRow(rowOf({ id: "tmp", name: "New" }));
+
+    const next = applyOptimistic([existing], {
+      type: "create",
+      project: created,
+    });
+
+    expect(next.map((p) => p.id)).toEqual(["tmp", "p1"]);
+  });
+
+  it("stamps the archive columns on the matching project only", () => {
+    const other = mapProjectRow(rowOf({ id: "p2" }));
+
+    const next = applyOptimistic([existing, other], {
+      type: "archive",
+      id: "p1",
+      at: "2026-07-22T12:00:00.000Z",
+      by: "u9",
+    });
+
+    expect(next[0]).toMatchObject({
+      id: "p1",
+      archivedAt: "2026-07-22T12:00:00.000Z",
+      archivedBy: "u9",
+    });
+    expect(next[1]).toEqual(other);
+  });
+
+  it("removes a deleted project from the list", () => {
+    const other = mapProjectRow(rowOf({ id: "p2" }));
+
+    const next = applyOptimistic([existing, other], {
+      type: "delete",
+      id: "p1",
+    });
+
+    expect(next.map((p) => p.id)).toEqual(["p2"]);
+  });
+
+  it("does not mutate the input list", () => {
+    const list = [existing];
+    applyOptimistic(list, { type: "delete", id: "p1" });
+    expect(list).toEqual([existing]);
   });
 });

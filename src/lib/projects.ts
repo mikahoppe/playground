@@ -72,3 +72,40 @@ export function mapProjectRow(row: ProjectRow): Project {
 export function isArchived(project: Project): boolean {
   return project.archivedAt !== null && project.deletedAt === null;
 }
+
+/**
+ * An optimistic mutation applied to the project list before the server
+ * confirms it. Timestamps and user ids are passed in (never derived inside the
+ * reducer) so the transform stays pure and deterministic.
+ */
+export type OptimisticAction =
+  | { type: "create"; project: Project }
+  | { type: "archive"; id: string; at: string; by: string }
+  | { type: "delete"; id: string };
+
+/**
+ * Apply an optimistic mutation to a project list, returning a new list. Mirrors
+ * what the corresponding server action will persist: a create prepends (newest
+ * first), an archive stamps the archive columns, a delete removes the row (the
+ * list only ever holds non-deleted projects).
+ * @param list - The current list.
+ * @param action - The optimistic mutation to apply.
+ * @returns The next list.
+ */
+export function applyOptimistic(
+  list: Project[],
+  action: OptimisticAction,
+): Project[] {
+  switch (action.type) {
+    case "create":
+      return [action.project, ...list];
+    case "archive":
+      return list.map((project) =>
+        project.id === action.id
+          ? { ...project, archivedAt: action.at, archivedBy: action.by }
+          : project,
+      );
+    case "delete":
+      return list.filter((project) => project.id !== action.id);
+  }
+}
